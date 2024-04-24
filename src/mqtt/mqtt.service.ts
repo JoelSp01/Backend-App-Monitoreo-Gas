@@ -1,24 +1,22 @@
 import { Injectable } from '@nestjs/common';
 import { MqttClient, connect } from 'mqtt';
-import * as mysql from 'mysql';
+import { InfluxDB, Point } from '@influxdata/influxdb-client';
 
 @Injectable()
 export class MqttService {
     private readonly client: MqttClient;
-    private readonly dbConnection: mysql.Connection;
+    private readonly influxDB: InfluxDB;
 
     constructor() {
         // Inicializa el cliente MQTT con la URL del broker
-        this.client = connect('mqtt://192.168.1.11:1883', {
+        this.client = connect('mqtt://192.168.1.10:1883', {
             clientId: 'nestjs-mqtt-client'
         });
 
-        // Inicializa la conexión a la base de datos MySQL
-        this.dbConnection = mysql.createConnection({
-            host: 'localhost',
-            user: 'root',
-            password: 'root',
-            database: 'bdd_titulacion'
+        // Configura la conexión a tu base de datos InfluxDB
+        this.influxDB = new InfluxDB({
+            url: 'http://localhost:8086',
+            token: 'B6FuBSJ2PHbKlt_NUcpG3ocWgnVt7-VNR9tMjMaW_jsZwkuxW4azGATxSIpjMZMXkk7igjP6XgW06KP2ZViTcg==',
         });
 
         // Maneja los eventos de conexión y mensaje recibido
@@ -49,19 +47,20 @@ export class MqttService {
             // Parsea el mensaje JSON recibido
             const data = JSON.parse(message);
 
-            // Inserta los datos en la base de datos MySQL
-            const query = `INSERT INTO tbl_lecturas (lec_peso, lec_temperatura) VALUES (?, ?)`;
-            this.dbConnection.query(query, [data.peso, data.temperatura], (error, results, fields) => {
-                if (error) {
-                    console.error('Error al insertar datos en la base de datos:', error);
-                } else {
-                    console.log('Datos insertados correctamente en la base de datos.');
-                }
-            });
+            // Inserta los datos en la base de datos InfluxDB
+            const writeApi = this.influxDB.getWriteApi('titulacion', 'titulacion');
+            const point = new Point('lecturas')
+                .tag('topic', topic)
+                .floatField('peso', data.peso)
+                .floatField('temperatura', data.temperatura)
+                .timestamp(new Date());
+
+            writeApi.writePoint(point);
+            writeApi.close();
+            console.log('Datos insertados correctamente en la base de datos InfluxDB.');
         } catch (error) {
             console.error('Error al parsear el mensaje JSON:', error);
         }
     }
-
 
 }
