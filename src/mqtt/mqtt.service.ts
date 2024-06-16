@@ -1,66 +1,85 @@
 import { Injectable } from '@nestjs/common';
 import { MqttClient, connect } from 'mqtt';
+import * as CryptoJS from 'crypto-js';
 import { InfluxDB, Point } from '@influxdata/influxdb-client';
 
 @Injectable()
 export class MqttService {
     private readonly client: MqttClient;
     private readonly influxDB: InfluxDB;
+    private readonly aes_key = '1234567890ABCDEF1234567890ABCDEF';
 
     constructor() {
-        // Inicializa el cliente MQTT con la URL del broker
-        this.client = connect('mqtt://192.168.1.10:1883', {
+        this.client = connect('mqtt://192.168.1.13:1883', {
             clientId: 'nestjs-mqtt-client'
         });
 
-        // Configura la conexión a tu base de datos InfluxDB
         this.influxDB = new InfluxDB({
             url: 'http://localhost:8086',
             token: 'B6FuBSJ2PHbKlt_NUcpG3ocWgnVt7-VNR9tMjMaW_jsZwkuxW4azGATxSIpjMZMXkk7igjP6XgW06KP2ZViTcg==',
         });
 
-        // Maneja los eventos de conexión y mensaje recibido
         this.client.on('connect', () => {
             console.log('Conectado al broker MQTT');
-            // Una vez conectado, suscríbete al tema deseado
             this.subscribe('datosTest');
         });
 
         this.client.on('message', (topic, message) => {
-            // Llama al método para manejar los mensajes recibidos en el controlador
             this.handleMessage(topic, message.toString());
         });
     }
 
-    // Método para suscribirse a un topic específico
     async subscribe(topic: string) {
         await this.client.subscribe(topic);
         console.log(`Suscripción al topic ${topic} exitosa`);
     }
 
-    // Método para manejar los mensajes recibidos (puede ser opcional)
-    handleMessage(topic: string, message: string) {
-        // Implementa el manejo de mensajes si es necesario
-        console.log(`Mensaje recibido en el topic ${topic}: ${message}`);
-
+    async handleMessage(topic: string, message: string) {
         try {
-            // Parsea el mensaje JSON recibido
-            const data = JSON.parse(message);
+            console.log(`Mensaje recibido en el topic ${topic}:`);
+            console.log(message);
 
-            // Inserta los datos en la base de datos InfluxDB
-            const writeApi = this.influxDB.getWriteApi('titulacion', 'titulacion');
-            const point = new Point('lecturas')
-                .tag('topic', topic)
-                .floatField('peso', data.peso)
-                .floatField('temperatura', data.temperatura)
-                .timestamp(new Date());
+            // Decodificar el mensaje Base64
+            const encryptedMessage = message;
+            const encryptedBytes = CryptoJS.enc.Base64.parse(encryptedMessage);
 
-            writeApi.writePoint(point);
-            writeApi.close();
-            console.log('Datos insertados correctamente en la base de datos InfluxDB.');
+            // Desencriptar los bytes utilizando AES-128 ECB
+            const decryptedBytes = CryptoJS.AES.decrypt(
+                { ciphertext: encryptedBytes },
+                CryptoJS.enc.Hex.parse(this.aes_key),
+                { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+            );
+
+            // Convertir los bytes desencriptados a texto UTF-8
+            const decryptedText = decryptedBytes.toString(CryptoJS.enc.Utf8);
+            console.log('Mensaje desencriptado:');
+            console.log(decryptedText);
+
+            // Separar los datos de peso y temperatura
+            const [peso, temperatura] = decryptedText.split(',');
+
+            // Procesar los datos como sea necesario (insertar en InfluxDB en este caso)
+            await this.insertDataIntoInfluxDB(topic, parseFloat(peso), parseFloat(temperatura));
+
         } catch (error) {
-            console.error('Error al parsear el mensaje JSON:', error);
+            console.error('Error al procesar el mensaje recibido:', error);
         }
     }
 
+    async insertDataIntoInfluxDB(topic: string, peso: number, temperatura: number) {
+        try {
+            const writeApi = this.influxDB.getWriteApi('titulacion', 'titulacion');
+            const point = new Point('lecturas')
+                .tag('topic', topic)
+                .floatField('peso', peso)
+                .floatField('temperatura', temperatura)
+                .timestamp(new Date());
+
+            await writeApi.writePoint(point);
+            writeApi.close();
+            console.log('Datos insertados correctamente en la base de datos InfluxDB.');
+        } catch (error) {
+            console.error('Error al insertar los datos en InfluxDB:', error);
+        }
+    }
 }
